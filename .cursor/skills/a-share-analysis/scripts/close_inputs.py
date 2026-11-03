@@ -201,6 +201,14 @@ def structure(q: dict) -> dict:
         bank_cushion = "bank_held"
     else:
         bank_cushion = "bank_did_not_hold"
+    if shanghai is None or food is None:
+        food_cushion = None
+    elif shanghai >= 0:
+        food_cushion = "not_applicable"
+    elif food > 0:
+        food_cushion = "food_held"
+    else:
+        food_cushion = "food_did_not_hold"
     chinext_hard = chinext is not None and chinext <= -1
     secondary = []
     if chinext_hard:
@@ -226,11 +234,16 @@ def structure(q: dict) -> dict:
         "hedge": hedge,
         "down_side": down_side,
         "bank_cushion": bank_cushion,
+        "food_cushion": food_cushion,
         "chinext_down_at_least_1pct": chinext_hard,
         "secondary_cushion": secondary,
         "weights_fell_less": sse50 is not None and chinext is not None and sse50 > chinext,
         "hedge_leg": "bank_399986_vs_electronics_399811",
-        "not_cushions": ["coal", "oil_gas", "brokers", "nonferrous", "new_energy"],
+        "primary_cushion": "bank",
+        "second_cushion_on_shanghai_down": "food",
+        "sample_window": "2026-07-01_to_2026-11-03",
+        "not_cushions": ["coal", "energy", "oil_gas", "brokers", "nonferrous", "new_energy"],
+        "interval_gain_not_cushion": ["liquor", "dividend", "coal", "energy", "oil_gas"],
     }
 
 
