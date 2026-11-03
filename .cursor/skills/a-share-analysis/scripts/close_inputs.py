@@ -257,6 +257,16 @@ def structure(q: dict) -> dict:
         "chinext_down_at_least_1pct": chinext_hard,
         "secondary_cushion": secondary,
         "weights_fell_less": sse50 is not None and chinext is not None and sse50 > chinext,
+        "decision": index_decision(
+            {
+                "hedge": hedge,
+                "down_side": down_side,
+                "bank_cushion": bank_cushion,
+                "shanghai_pct": shanghai,
+                "electronics_pct": electronics,
+                "telecom_pct": telecom,
+            }
+        ),
         "hedge_leg": "bank_399986_vs_electronics_399811",
         "primary_cushion": "bank",
         "second_cushion_on_shanghai_down": "food",
@@ -325,6 +335,29 @@ def sell_checks(q: dict) -> dict:
 
 def _q(pcts: dict) -> dict:
     return {code: {"pct": value} for code, value in pcts.items()}
+
+
+def index_decision(s: dict) -> str | None:
+    """One close sentence from the hedge and cushion flags. Does not change the score."""
+    hedge = s.get("hedge")
+    shanghai = s.get("shanghai_pct")
+    if hedge is None or shanghai is None:
+        return None
+    electronics = s.get("electronics_pct")
+    telecom = s.get("telecom_pct")
+    growth_up = (electronics is not None and electronics > 0) or (
+        telecom is not None and telecom > 0
+    )
+    rally = shanghai > 0 and growth_up
+    if hedge == "opposite" and s.get("down_side") == "growth" and s.get("bank_cushion") == "bank_held":
+        return "growth_down_bank_held"
+    if hedge == "opposite" and s.get("down_side") == "banks" and rally:
+        return "growth_led_rebound"
+    if hedge == "same_or_flat" and s.get("bank_cushion") == "bank_did_not_hold":
+        return "same_direction_bank_not_held"
+    if rally:
+        return "rally_without_hedge"
+    return "no_set_decision"
 
 
 def month_stage(q: dict) -> dict:
@@ -422,6 +455,24 @@ def self_check() -> int:
             failed += 1
         else:
             print(f"ok {name}")
+        decision = got["decision"]
+        expect = {
+            "nov3 bank did not hold": "same_direction_bank_not_held",
+            "shanghai down bank up": "growth_down_bank_held",
+            "shanghai up": "no_set_decision",
+            "bank missing": None,
+        }[name]
+        if decision != expect:
+            print(f"FAIL {name} decision: {decision}")
+            failed += 1
+    rebound = structure(
+        _q({"000001": 1.0, "399986": -0.2, "399811": 1.2, "399389": 0.8, "000807": -0.3})
+    )
+    if rebound["decision"] != "growth_led_rebound" or rebound["down_side"] != "banks":
+        print(f"FAIL rebound decision: {rebound['decision']} {rebound['down_side']}")
+        failed += 1
+    else:
+        print("ok growth led rebound")
     registered = structure(
         _q(
             {
