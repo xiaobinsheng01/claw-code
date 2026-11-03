@@ -167,7 +167,7 @@ def _direction(value):
 
 
 def structure(q: dict) -> dict:
-    """Daily hedge and cushion checks. Does not change the behavior score."""
+    """Daily hedge, cushion, and national-team wording. Does not change the score."""
     shanghai = _pct(q, "000001")
     chinext = _pct(q, "399006")
     sse50 = _pct(q, "000016")
@@ -201,6 +201,14 @@ def structure(q: dict) -> dict:
         bank_cushion = "bank_held"
     else:
         bank_cushion = "bank_did_not_hold"
+    if bank_cushion == "bank_held":
+        book_price = "book_price_held"
+    elif bank_cushion == "bank_did_not_hold":
+        book_price = "book_price_did_not_hold"
+    elif bank_cushion == "not_applicable":
+        book_price = "not_applicable"
+    else:
+        book_price = None
     if shanghai is None or food is None:
         food_cushion = None
     elif shanghai >= 0:
@@ -234,6 +242,12 @@ def structure(q: dict) -> dict:
         "hedge": hedge,
         "down_side": down_side,
         "bank_cushion": bank_cushion,
+        "book_price": book_price,
+        "national_team_share_anchor": "2026-09-30_unchanged",
+        "national_team_entities": ["huijin_investment", "huijin_asset_mgmt", "csfc"],
+        "national_team_excluded": ["guojin_fund"],
+        "huijin_brokers_not_cushion": ["000166", "601066", "601995", "601336"],
+        "etf_creation_label": "broad_etf_creation_not_huijin_buy",
         "food_cushion": food_cushion,
         "chinext_down_at_least_1pct": chinext_hard,
         "secondary_cushion": secondary,
@@ -276,7 +290,58 @@ def sell_checks(q: dict) -> dict:
     }
 
 
+def _q(pcts: dict) -> dict:
+    return {code: {"pct": value} for code, value in pcts.items()}
+
+
+def self_check() -> int:
+    """Offline checks for the national-team wording flag. No network."""
+    cases = [
+        (
+            "nov3 bank did not hold",
+            _q({"000001": -0.82, "399986": -0.39, "399811": -5.83, "000807": 1.93}),
+            "book_price_did_not_hold",
+            "bank_did_not_hold",
+        ),
+        (
+            "shanghai down bank up",
+            _q({"000001": -1.0, "399986": 0.5, "399811": -2.0, "000807": -0.2}),
+            "book_price_held",
+            "bank_held",
+        ),
+        (
+            "shanghai up",
+            _q({"000001": 0.2, "399986": 0.5, "399811": -0.4, "000807": 0.1}),
+            "not_applicable",
+            "not_applicable",
+        ),
+        (
+            "bank missing",
+            _q({"000001": -0.5, "399811": -1.0}),
+            None,
+            None,
+        ),
+    ]
+    failed = 0
+    for name, quotes, book, bank in cases:
+        got = structure(quotes)
+        if got["book_price"] != book or got["bank_cushion"] != bank:
+            print(f"FAIL {name}: {got['book_price']} {got['bank_cushion']}")
+            failed += 1
+        elif got["national_team_share_anchor"] != "2026-09-30_unchanged":
+            print(f"FAIL {name}: anchor {got['national_team_share_anchor']}")
+            failed += 1
+        elif "guojin_fund" not in got["national_team_excluded"]:
+            print(f"FAIL {name}: guojin not excluded")
+            failed += 1
+        else:
+            print(f"ok {name}")
+    return 1 if failed else 0
+
+
 def main() -> int:
+    if "--self-check" in sys.argv:
+        return self_check()
     fast = "--fast" in sys.argv
     packet: dict = {"fast": fast, "gaps": []}
     try:
