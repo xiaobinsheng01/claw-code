@@ -22,6 +22,12 @@ CODES = [
     "sz399986",
     "sz399998",
     "sz399997",
+    "sh000807",
+    "sh000015",
+    "sz399811",
+    "sh000685",
+    "sz399389",
+    "sh000941",
     "sh600519",
     "sz300750",
     "sz002081",
@@ -146,6 +152,88 @@ def repair(q: dict) -> dict:
     }
 
 
+def _pct(q: dict, code: str):
+    return (q.get(code) or {}).get("pct")
+
+
+def _direction(value):
+    if value is None:
+        return None
+    if value > 0:
+        return "up"
+    if value < 0:
+        return "down"
+    return "flat"
+
+
+def structure(q: dict) -> dict:
+    """Daily hedge and cushion checks. Does not change the behavior score."""
+    shanghai = _pct(q, "000001")
+    chinext = _pct(q, "399006")
+    sse50 = _pct(q, "000016")
+    bank = _pct(q, "399986")
+    electronics = _pct(q, "399811")
+    chip = _pct(q, "000685")
+    telecom = _pct(q, "399389")
+    star50 = _pct(q, "000688")
+    food = _pct(q, "000807")
+    liquor = _pct(q, "399997")
+    dividend = _pct(q, "000015")
+    bank_dir = _direction(bank)
+    electronics_dir = _direction(electronics)
+    if bank_dir in ("up", "down") and electronics_dir in ("up", "down") and bank_dir != electronics_dir:
+        hedge = "opposite"
+    elif bank_dir is None or electronics_dir is None:
+        hedge = None
+    else:
+        hedge = "same_or_flat"
+    if hedge == "opposite" and bank_dir == "up":
+        down_side = "growth"
+    elif hedge == "opposite" and bank_dir == "down":
+        down_side = "banks"
+    else:
+        down_side = None
+    if shanghai is None or bank is None:
+        bank_cushion = None
+    elif shanghai >= 0:
+        bank_cushion = "not_applicable"
+    elif bank > 0:
+        bank_cushion = "bank_held"
+    else:
+        bank_cushion = "bank_did_not_hold"
+    chinext_hard = chinext is not None and chinext <= -1
+    secondary = []
+    if chinext_hard:
+        if food is not None and food > 0:
+            secondary.append("food")
+        if liquor is not None and liquor > 0:
+            secondary.append("liquor")
+        if dividend is not None and dividend > 0:
+            secondary.append("dividend")
+    return {
+        "shanghai_pct": shanghai,
+        "bank_pct": bank,
+        "electronics_pct": electronics,
+        "chip_pct": chip,
+        "telecom_pct": telecom,
+        "chinext_pct": chinext,
+        "star50_pct": star50,
+        "sse50_pct": sse50,
+        "food_pct": food,
+        "liquor_pct": liquor,
+        "dividend_pct": dividend,
+        "new_energy_pct": _pct(q, "000941"),
+        "hedge": hedge,
+        "down_side": down_side,
+        "bank_cushion": bank_cushion,
+        "chinext_down_at_least_1pct": chinext_hard,
+        "secondary_cushion": secondary,
+        "weights_fell_less": sse50 is not None and chinext is not None and sse50 > chinext,
+        "hedge_leg": "bank_399986_vs_electronics_399811",
+        "not_cushions": ["coal", "oil_gas", "brokers", "nonferrous", "new_energy"],
+    }
+
+
 def sell_checks(q: dict) -> dict:
     jt = q.get("002081") or {}
     zx = q.get("601061") or {}
@@ -214,6 +302,7 @@ def main() -> int:
             packet["limit_up"] = None
             packet["gaps"].append(f"limit_up: {type(exc).__name__}")
     packet["repair"] = repair(q)
+    packet["structure"] = structure(q)
     packet["sell_checks"] = sell_checks(q)
     print(json.dumps(packet, ensure_ascii=False, indent=2))
     return 0
