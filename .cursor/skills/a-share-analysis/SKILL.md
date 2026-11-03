@@ -1,9 +1,9 @@
 ---
-name: ren-kui-huan-su
-description: "认亏换速 A 股盘前、盘中、收盘分析：读执行流程与合订板 canvas，按采集时钟拉资料，算行为分与板块看涨，写大盘四态；盘中只改 W6、价位、30 分钟与板块只数，不改 W1–W8 与开仓门。持仓硬约束：金螳螂只卖，中信 9.55 以下减 1000。Use when the user asks for 盘前/盘中/收盘/实时分析、行为分、板块看涨、大盘四态、明天预测，或认亏换速相关执行。"
+name: a-share-analysis
+description: "A股分析：盘前、盘中、收盘读执行流程与合订板 canvas，按采集时钟拉资料，算行为分与板块看涨，写大盘四态。盘中只改 W6、价位、30 分钟与板块只数，不改 W1–W8 与开仓门。持仓硬约束：金螳螂只卖，中信 9.55 以下减 1000。Use when the user asks for A股分析、盘前/盘中/收盘/实时分析、行为分、板块看涨、大盘四态、明天预测。"
 ---
 
-# 认亏换速 · 盘前 / 盘中 / 收盘
+# A股分析
 
 规则与权重以 **Canvas 为唯一正文**；本 skill 只规定何时读什么、允许改什么、产出格式。不要在本文件里改权重或硬约束。
 
@@ -112,7 +112,7 @@ description: "认亏换速 A 股盘前、盘中、收盘分析：读执行流程
 
 ## 可选：定时唤醒
 
-若用户在 **Cloud Agent** 且希望 9:45 / 11:30 / 13:05 自动盘中快评，可读 `subscribe` skill，用 `cursor-subscriptions-subscribe_timer` 设北京时间 one-shot（`once: true`），prompt 写「按 ren-kui-huan-su skill 盘中模式出快评」。Timer 不能替代 9:00 终分数据拉取。
+若用户在 **Cloud Agent** 且希望 9:45 / 11:30 / 13:05 自动盘中快评，可读 `subscribe` skill，用 `cursor-subscriptions-subscribe_timer` 设北京时间 one-shot（`once: true`），prompt 写「按 A股分析 skill 盘中模式出快评」。Timer 不能替代 9:00 终分数据拉取。
 
 ## 与 PR/代码无关
 
