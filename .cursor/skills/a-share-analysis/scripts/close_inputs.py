@@ -24,6 +24,7 @@ CODES = [
     "sz399997",
     "sh000807",
     "sh000015",
+    "sz399809",
     "sz399811",
     "sh000685",
     "sz399389",
@@ -179,6 +180,7 @@ def structure(q: dict) -> dict:
     food = _pct(q, "000807")
     liquor = _pct(q, "399997")
     dividend = _pct(q, "000015")
+    insurance = _pct(q, "399809")
     bank_dir = _direction(bank)
     electronics_dir = _direction(electronics)
     if bank_dir in ("up", "down") and electronics_dir in ("up", "down") and bank_dir != electronics_dir:
@@ -226,6 +228,8 @@ def structure(q: dict) -> dict:
             secondary.append("liquor")
         if dividend is not None and dividend > 0:
             secondary.append("dividend")
+        if insurance is not None and insurance > 0:
+            secondary.append("insurance")
     return {
         "shanghai_pct": shanghai,
         "bank_pct": bank,
@@ -238,6 +242,7 @@ def structure(q: dict) -> dict:
         "food_pct": food,
         "liquor_pct": liquor,
         "dividend_pct": dividend,
+        "insurance_pct": insurance,
         "new_energy_pct": _pct(q, "000941"),
         "hedge": hedge,
         "down_side": down_side,
@@ -256,8 +261,36 @@ def structure(q: dict) -> dict:
         "primary_cushion": "bank",
         "second_cushion_on_shanghai_down": "food",
         "sample_window": "2026-07-01_to_2026-11-03",
-        "not_cushions": ["coal", "energy", "oil_gas", "brokers", "nonferrous", "new_energy"],
-        "interval_gain_not_cushion": ["liquor", "dividend", "coal", "energy", "oil_gas"],
+        "not_cushions": [
+            "coal",
+            "energy",
+            "oil_gas",
+            "brokers",
+            "nonferrous",
+            "new_energy",
+            "insurance",
+            "power",
+            "transport",
+            "pharma",
+            "nonbank",
+            "media",
+            "software",
+            "appliance",
+        ],
+        "interval_gain_not_cushion": [
+            "liquor",
+            "dividend",
+            "coal",
+            "energy",
+            "oil_gas",
+            "insurance",
+            "power",
+            "transport",
+            "pharma",
+            "nonbank",
+            "appliance",
+        ],
+        "appliance_index": "unavailable_on_qt.gtimg.cn",
     }
 
 
@@ -336,6 +369,47 @@ def self_check() -> int:
             failed += 1
         else:
             print(f"ok {name}")
+    registered = structure(
+        _q(
+            {
+                "000001": -1.2,
+                "399006": -1.4,
+                "399986": -0.3,
+                "399811": -2.0,
+                "000807": 0.2,
+                "399997": -0.4,
+                "000015": 0.1,
+                "399809": 0.6,
+            }
+        )
+    )
+    if registered["secondary_cushion"] != ["food", "dividend", "insurance"]:
+        print(f"FAIL secondary: {registered['secondary_cushion']}")
+        failed += 1
+    elif registered["food_cushion"] != "food_held" or registered["bank_cushion"] != "bank_did_not_hold":
+        print("FAIL cushions moved")
+        failed += 1
+    elif "insurance" not in registered["not_cushions"]:
+        print("FAIL insurance still a cushion")
+        failed += 1
+    else:
+        print("ok secondary insurance")
+    quiet = structure(
+        _q(
+            {
+                "000001": -0.2,
+                "399006": -0.5,
+                "399986": 0.1,
+                "399811": -0.2,
+                "399809": 1.0,
+            }
+        )
+    )
+    if quiet["secondary_cushion"] != []:
+        print(f"FAIL quiet secondary: {quiet['secondary_cushion']}")
+        failed += 1
+    else:
+        print("ok chinext under 1pct skips insurance")
     return 1 if failed else 0
 
 
