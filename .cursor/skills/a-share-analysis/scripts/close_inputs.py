@@ -327,6 +327,59 @@ def _q(pcts: dict) -> dict:
     return {code: {"pct": value} for code, value in pcts.items()}
 
 
+def month_stage(q: dict) -> dict:
+    """Classify a finished month. Inputs are month percent changes, not daily moves.
+
+    Does not change the score, and is not called on the daily quote packet.
+    Bleed still needs a separate count of how many industries closed down.
+    """
+    sse = _pct(q, "000001")
+    sse50 = _pct(q, "000016")
+    chinext = _pct(q, "399006")
+    bank = _pct(q, "399986")
+    electronics = _pct(q, "399811")
+    sessions = q.get("_sessions")
+    missing = any(value is None for value in (sse, sse50, chinext, bank, electronics))
+    if missing:
+        return {
+            "stage": None,
+            "support": None,
+            "rebound": None,
+            "drift": None,
+            "too_short": None,
+        }
+    too_short = sessions is not None and sessions < 5
+    less = sse50 - chinext
+    support = (not too_short) and sse < 0 and chinext < 0 and less >= 10 and bank > 0
+    rebound = (not too_short) and sse > 0 and electronics > 0
+    drift = (
+        (not too_short)
+        and sse < 0
+        and bank > 0
+        and electronics < 0
+        and electronics > -15
+        and less < 10
+    )
+    if too_short:
+        stage = "too_short"
+    elif rebound:
+        stage = "rebound"
+    elif support:
+        stage = "support"
+    elif drift:
+        stage = "drift"
+    else:
+        stage = "unclassified"
+    return {
+        "stage": stage,
+        "support": support,
+        "rebound": rebound,
+        "drift": drift,
+        "too_short": too_short,
+        "sse50_less_than_chinext_pp": round(less, 2),
+    }
+
+
 def self_check() -> int:
     """Offline checks for the national-team wording flag. No network."""
     cases = [
@@ -410,6 +463,45 @@ def self_check() -> int:
         failed += 1
     else:
         print("ok chinext under 1pct skips insurance")
+    months = [
+        (
+            "july support",
+            {"000001": -6.4, "000016": -2.2, "399006": -23.0, "399986": 11.8, "399811": -34.5, "_sessions": 23},
+            "support",
+        ),
+        (
+            "august rebound",
+            {"000001": 4.0, "000016": 0.5, "399006": 2.8, "399986": 0.1, "399811": 10.1, "_sessions": 21},
+            "rebound",
+        ),
+        (
+            "september drift",
+            {"000001": -3.6, "000016": -3.9, "399006": -8.8, "399986": 2.4, "399811": -9.8, "_sessions": 21},
+            "drift",
+        ),
+        (
+            "october support",
+            {"000001": -6.3, "000016": -2.9, "399006": -23.0, "399986": 4.8, "399811": -28.1, "_sessions": 17},
+            "support",
+        ),
+        (
+            "november too short",
+            {"000001": 0.25, "000016": 0.95, "399006": -0.91, "399986": -1.29, "399811": -4.84, "_sessions": 2},
+            "too_short",
+        ),
+    ]
+    for name, raw, stage in months:
+        got = month_stage(_q(raw) | {"_sessions": raw["_sessions"]})
+        if got["stage"] != stage:
+            print(f"FAIL {name}: {got['stage']}")
+            failed += 1
+        else:
+            print(f"ok {name}")
+    if month_stage(_q({"000001": -3.6, "000016": -3.9, "399006": -8.8, "399986": 2.4}))["stage"] is not None:
+        print("FAIL month stage without electronics")
+        failed += 1
+    else:
+        print("ok month stage missing electronics")
     return 1 if failed else 0
 
 
