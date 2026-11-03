@@ -290,7 +290,7 @@ def structure(q: dict) -> dict:
             "nonbank",
             "appliance",
         ],
-        "appliance_index": "unavailable_on_qt.gtimg.cn",
+        "appliance_index": "gap_tencent_sina_eastmoney_public_2026-11-04",
     }
 
 
