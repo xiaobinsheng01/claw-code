@@ -295,8 +295,40 @@ def assign_names(sectors: list[dict], members: dict[str, list[dict]]) -> dict[st
     return out
 
 
+INDUSTRY_ORDER = ("科创芯片", "CSSW电子", "全指信息", "国证通信")
+
+
+def _industry_rank(name: str) -> int:
+    try:
+        return INDUSTRY_ORDER.index(name)
+    except ValueError:
+        return len(INDUSTRY_ORDER)
+
+
+def _earnings_key(row: dict) -> tuple:
+    """Larger profit first. Equal profit uses the higher profit growth."""
+    profit = _num(row.get("profit"))
+    growth = _num(row.get("profit_yoy"))
+    return (
+        profit is None,
+        -(profit or 0.0),
+        growth is None,
+        -(growth or 0.0),
+    )
+
+
+def _line_key(gap) -> tuple:
+    """Already on the 10-day line first. A smaller shortfall ranks next."""
+    gap = _num(gap)
+    if gap is None:
+        return (2, 0.0)
+    if gap <= 0:
+        return (0, gap)
+    return (1, gap)
+
+
 def recommend(rows: list[dict], held: set[str]) -> dict:
-    """Pass every gate. List every name that passes. The first ten are only the sort order."""
+    """Pass every gate. Group by industry, then by profit, then by the 10-day line."""
     passed = []
     held_aside = []
     for row in rows:
@@ -310,7 +342,13 @@ def recommend(rows: list[dict], held: set[str]) -> dict:
             held_aside.append(row)
             continue
         passed.append(row)
-    passed.sort(key=lambda row: (row.get("gap") is None, row.get("gap") or 1))
+    passed.sort(
+        key=lambda row: (
+            _industry_rank(str(row.get("industry") or "")),
+            *_earnings_key(row),
+            *_line_key(row.get("ma10_gap_pct")),
+        )
+    )
     return {
         "names": passed,
         "priority": passed[:MAX_NAMES],
@@ -625,13 +663,18 @@ def self_check() -> int:
     check("electronics drops the chip and the large cap", [row["code"] for row in assigned["399811"]] == ["002415"])
     check("info drops a code already taken", [row["code"] for row in assigned["000993"]] == ["600570"])
     sample = [
-        {"code": "600001", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.02},
-        {"code": "600002", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.01},
-        {"code": "002081", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.001},
-        {"code": "600003", "near": "pass", "holder": "complex", "earnings": "pass", "gap": 0.0},
+        {"code": "600001", "industry": "CSSW电子", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.02, "profit": 1, "profit_yoy": 1, "ma10_gap_pct": 1},
+        {"code": "600002", "industry": "CSSW电子", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.01, "profit": 5, "profit_yoy": 1, "ma10_gap_pct": 3},
+        {"code": "600004", "industry": "科创芯片", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.05, "profit": 2, "profit_yoy": 1, "ma10_gap_pct": -1},
+        {"code": "600005", "industry": "CSSW电子", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.04, "profit": 5, "profit_yoy": 9, "ma10_gap_pct": 4},
+        {"code": "002081", "industry": "CSSW电子", "near": "pass", "holder": "simple", "earnings": "pass", "gap": 0.001, "profit": 9, "profit_yoy": 1, "ma10_gap_pct": -2},
+        {"code": "600003", "industry": "CSSW电子", "near": "pass", "holder": "complex", "earnings": "pass", "gap": 0.0, "profit": 8, "profit_yoy": 1, "ma10_gap_pct": 0},
     ]
     picked = recommend(sample, {"002081"})
-    check("closest first and holding aside", [row["code"] for row in picked["names"]] == ["600002", "600001"])
+    check(
+        "industry then profit then the 10-day line",
+        [row["code"] for row in picked["names"]] == ["600004", "600005", "600002", "600001"],
+    )
     check("held aside", [row["code"] for row in picked["held_aside"]] == ["002081"])
     return failed
 
