@@ -249,7 +249,20 @@ def structure(q: dict) -> dict:
         "bank_cushion": bank_cushion,
         "book_price": book_price,
         "national_team_share_anchor": "2026-09-30_unchanged",
-        "national_team_entities": ["huijin_investment", "huijin_asset_mgmt", "csfc"],
+        "national_team_entities": [
+            "huijin_investment",
+            "huijin_asset_mgmt",
+            "csfc",
+            "guoxin",
+            "chengtong",
+        ],
+        "national_team_bank_anchor_entities": [
+            "huijin_investment",
+            "huijin_asset_mgmt",
+            "csfc",
+        ],
+        "operating_platform_share_as_of": "2026-09-30_top10",
+        "operating_platform_changes_open": False,
         "national_team_excluded": ["guojin_fund"],
         "huijin_brokers_not_cushion": ["000166", "601066", "601995", "601336"],
         "etf_creation_label": "broad_etf_creation_not_huijin_buy",
@@ -452,6 +465,22 @@ def self_check() -> int:
             failed += 1
         elif "guojin_fund" not in got["national_team_excluded"]:
             print(f"FAIL {name}: guojin not excluded")
+            failed += 1
+        elif got["national_team_entities"][-2:] != ["guoxin", "chengtong"]:
+            print(f"FAIL {name}: operating platforms {got['national_team_entities']}")
+            failed += 1
+        elif got["national_team_bank_anchor_entities"] != [
+            "huijin_investment",
+            "huijin_asset_mgmt",
+            "csfc",
+        ]:
+            print(f"FAIL {name}: bank anchor entities")
+            failed += 1
+        elif got["operating_platform_changes_open"] is not False:
+            print(f"FAIL {name}: operating platform opened a position")
+            failed += 1
+        elif got["operating_platform_share_as_of"] != "2026-09-30_top10":
+            print(f"FAIL {name}: platform as-of {got['operating_platform_share_as_of']}")
             failed += 1
         else:
             print(f"ok {name}")
