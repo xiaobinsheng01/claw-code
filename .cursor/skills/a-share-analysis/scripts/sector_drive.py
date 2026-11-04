@@ -179,7 +179,7 @@ def state_capital(names: list) -> dict:
         norm = _norm_name(name)
         if any(word in norm for word in STATE_WORDS):
             listed.append(record)
-        elif "国有资产" in norm or "国资" in norm:
+        elif "国有资产" in norm:
             beside.append(record)
     return {"listed": listed, "beside": beside}
 
@@ -193,6 +193,29 @@ def prior_pct(series: list[tuple[str, float]], trade_date: str):
     if prev is None or prev <= 0 or last is None:
         return None
     return last / prev - 1.0
+
+
+def rise_amount(series: list[tuple[str, float]], trade_date: str):
+    """Yuan change versus the previous close. A down day stays negative."""
+    if len(series) < 2 or series[-1][0] != trade_date:
+        return None
+    prev = series[-2][1]
+    last = series[-1][1]
+    if prev is None or last is None:
+        return None
+    return last - prev
+
+
+def ma10_gap_pct(close, ma10):
+    """Percentage points still needed to stand on the 10-day average.
+
+    Positive means the close is below the line. Negative means it is already above.
+    """
+    close = _num(close)
+    ma10 = _num(ma10)
+    if close is None or ma10 is None or close <= 0:
+        return None
+    return (ma10 / close - 1.0) * 100.0
 
 
 def earnings_state(profit, profit_yoy, income_yoy) -> str:
@@ -273,7 +296,7 @@ def assign_names(sectors: list[dict], members: dict[str, list[dict]]) -> dict[st
 
 
 def recommend(rows: list[dict], held: set[str]) -> dict:
-    """Pass every gate, then keep the ten closest to a moving average."""
+    """Pass every gate. List every name that passes. The first ten are only the sort order."""
     passed = []
     held_aside = []
     for row in rows:
@@ -288,7 +311,12 @@ def recommend(rows: list[dict], held: set[str]) -> dict:
             continue
         passed.append(row)
     passed.sort(key=lambda row: (row.get("gap") is None, row.get("gap") or 1))
-    return {"names": passed[:MAX_NAMES], "extra": max(0, len(passed) - MAX_NAMES), "held_aside": held_aside}
+    return {
+        "names": passed,
+        "priority": passed[:MAX_NAMES],
+        "extra": 0,
+        "held_aside": held_aside,
+    }
 
 
 def _fetch(url: str, timeout: int = 20) -> bytes:
@@ -327,11 +355,8 @@ def fetch_board(board: str) -> list[dict]:
     return rows
 
 
-def fetch_closes(code: str) -> list[tuple[str, float]]:
-    prefix = "sh" if code.startswith("6") else "sz"
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix}{code},day,,,30,qfq"
-    payload = json.loads(_fetch(url).decode())
-    series = (payload.get("data") or {}).get(f"{prefix}{code}") or {}
+def _bars_from_payload(payload: dict, key: str) -> list[tuple[str, float]]:
+    series = (payload.get("data") or {}).get(key) or {}
     bars = series.get("qfqday") or series.get("day") or []
     out = []
     for bar in bars:
@@ -340,8 +365,37 @@ def fetch_closes(code: str) -> list[tuple[str, float]]:
         close = _num(bar[2])
         if close is None:
             continue
-        out.append((bar[0], close))
+        out.append((str(bar[0]), close))
     return out
+
+
+def fetch_closes(code: str) -> list[tuple[str, float]]:
+    """Adjusted daily closes. The proxy is used only when the first host does not answer."""
+    prefix = "sh" if code.startswith("6") else "sz"
+    key = f"{prefix}{code}"
+    urls = (
+        f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={key},day,,,30,qfq",
+        f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={key},day,,,30,qfq",
+    )
+    last_error = None
+    for url in urls:
+        try:
+            raw = _fetch(url).decode("utf-8", "replace")
+        except Exception as exc:  # noqa: BLE001 — try the next public host
+            last_error = exc
+            continue
+        if "=" in raw[:40]:
+            raw = raw.split("=", 1)[1]
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        bars = _bars_from_payload(payload, key)
+        if bars:
+            return bars
+    if last_error:
+        raise last_error
+    return []
 
 
 def fetch_holders(code: str) -> list[list[str]]:
@@ -430,6 +484,8 @@ def screen(path: str, pcts: dict, shanghai_pct, held: set[str], us: dict, trade_
         row["ma10"] = stats["ma10"]
         row["close"] = stats["close"]
         row["pct"] = prior_pct(series, trade_date)
+        row["rise"] = rise_amount(series, trade_date)
+        row["ma10_gap_pct"] = ma10_gap_pct(stats["close"], stats["ma10"])
         if stats["state"] == "pass":
             kept.append(row)
     near_rows = [row for row in kept if row.get("near") == "pass"]
@@ -532,9 +588,27 @@ def self_check() -> int:
     sasac = state_capital(["某某市国有资产监督管理委员会"])
     check("sasac is listed", sasac["listed"] and sasac["beside"] == [])
     check("plain holder", state_capital(["甲公司"]) == {"listed": [], "beside": []})
+    fuguo = state_capital(["中信银行股份有限公司-富国资源精选混合型发起式证券投资基金"])
+    check("fuguo fund is not state capital", fuguo["listed"] == [] and fuguo["beside"] == [])
     moved = prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-04")
     check("prior pct", moved is not None and abs(moved - (13.36 / 12.42 - 1)) < 1e-12)
     check("pct other day", prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-05") is None)
+    series = [("2026-11-03", 12.42), ("2026-11-04", 13.36)]
+    check("rise amount", abs(rise_amount(series, "2026-11-04") - 0.94) < 1e-12)
+    check("rise other day", rise_amount(series, "2026-11-05") is None)
+    below = ma10_gap_pct(18.22, 19.871)
+    check("below the 10-day line", below is not None and below > 0 and abs(below - (19.871 / 18.22 - 1) * 100) < 1e-9)
+    above = ma10_gap_pct(13.36, 13.358)
+    check("already above the 10-day line", above is not None and above < 0)
+    check("gap missing", ma10_gap_pct(None, 10) is None)
+    wide = recommend(
+        [
+            {"code": f"60000{i}", "near": "pass", "holder": "simple", "earnings": "pass", "gap": i / 100}
+            for i in range(12)
+        ],
+        set(),
+    )
+    check("every passer is listed", len(wide["names"]) == 12 and len(wide["priority"]) == 10 and wide["extra"] == 0)
     check("earnings pass", earnings_state(1, 0, 0) == "pass")
     check("earnings loss", earnings_state(-1, 10, 10) == "fail")
     check("earnings gap", earnings_state(1, None, 1) == "unchecked")
