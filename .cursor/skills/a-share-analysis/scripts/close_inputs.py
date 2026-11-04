@@ -2,6 +2,7 @@
 """Print the quotes, breadth, and repair-day checks for one A-share close.
 
 Stdlib only. Does not score W1–W8 and does not emit an order.
+favored_path, four_paths, and first_day_follow_through do not score W1–W8 and do not emit an order.
 5-day turnover comes from Tencent bars that print amount. Volume is never converted. The average stays null when that bar is missing or does not match the quote.
 """
 
@@ -220,6 +221,92 @@ def leader_index_pct(top_industry: str, q: dict) -> tuple[bool, float | None]:
     if not values:
         return True, None
     return True, max(values)
+
+
+def four_paths(low: float, high: float) -> dict:
+    """Hard band, narrow band, and the two outside lines.
+
+    The narrow ceiling is the midpoint, not the high. This does not score
+    W1–W8, does not choose the favored path, and does not emit an order.
+    """
+    midpoint = (low + high) / 2.0
+    return {
+        "hard_low": low,
+        "hard_high": high,
+        "midpoint": midpoint,
+        "narrow_low": low,
+        "narrow_high": midpoint,
+        "above": high,
+        "below": low,
+    }
+
+
+def round_fen(value: float) -> float:
+    """Half-up to 分 for a positive price.
+
+    Python round is bankers' rounding, so 9.345 would become 9.34.
+    A binary float of an exact half-fen can land a hair under the half.
+    The extra 1e-6 is on the fen scale and does not move a price a full 0.001 away.
+    """
+    return int(value * 100 + 0.5 + 1e-6) / 100.0
+
+
+def favored_path(
+    prior_high: float,
+    session_high: float | None,
+    prev_close_above_older_high: bool,
+    w3_negative: bool,
+    a50_gap: bool,
+) -> str:
+    """Choose the favored path. Does not move the narrow ceiling or the W3 sign.
+
+    A session high above the prior high wins. Touching that high does not.
+    This does not score W1–W8 and does not emit an order.
+    """
+    if session_high is not None and session_high > prior_high:
+        return "above_prior_high"
+    if prev_close_above_older_high:
+        return "above_prior_high"
+    if w3_negative and a50_gap:
+        return "narrow_lower"
+    return "not_forced"
+
+
+def first_day_follow_through(
+    open_premium_held: bool | None,
+    index_above_prior_high: bool | None,
+    leader_above_prior_high: bool | None,
+) -> str:
+    """Three next-day checks. One False stops the first day. None is unchecked.
+
+    This does not fetch the limit-up list and does not emit an order.
+    """
+    flags = (open_premium_held, index_above_prior_high, leader_above_prior_high)
+    if any(flag is False for flag in flags):
+        return "stopped"
+    if any(flag is None for flag in flags):
+        return "unchecked"
+    return "continue"
+
+
+def leader_hold_level(top_industry: str, q: dict):
+    """Prior high of the same index leader_index_pct would pick.
+
+    Telecom uses 399389. Otherwise the higher percent of 000685 and 399811,
+    then that index's high. Does not score and does not emit an order.
+    """
+    if not any(key in top_industry for key in GROWTH_INDUSTRY_KEYS):
+        return None
+    if "通信" in top_industry:
+        return (q.get("399389") or {}).get("high")
+    choices = []
+    for code in ("000685", "399811"):
+        row = q.get(code) or {}
+        if row.get("pct") is not None and row.get("high") is not None:
+            choices.append((row["pct"], row["high"]))
+    if not choices:
+        return None
+    return max(choices)[1]
 
 
 def index_amount_wan(code: str) -> list[tuple[str, float]]:
@@ -816,6 +903,93 @@ def self_check() -> int:
         failed += 1
     else:
         print("ok missing height stays unchecked")
+    morning = favored_path(3624.58, 3605.39, False, True, True)
+    if morning != "narrow_lower":
+        print(f"FAIL nov4 morning path: {morning}")
+        failed += 1
+    else:
+        print("ok nov4 morning stays narrow")
+    broken = favored_path(3624.58, 3686.17, False, True, True)
+    if broken != "above_prior_high":
+        print(f"FAIL breakout path: {broken}")
+        failed += 1
+    else:
+        print("ok breakout leaves the narrow band")
+    premarket = favored_path(3686.17, None, True, True, True)
+    if premarket != "above_prior_high":
+        print(f"FAIL nov5 premarket path: {premarket}")
+        failed += 1
+    else:
+        print("ok nov5 premarket stays above the prior high")
+    touched = favored_path(3624.58, 3624.58, False, True, True)
+    if touched != "narrow_lower":
+        print(f"FAIL touch does not switch: {touched}")
+        failed += 1
+    else:
+        print("ok touching the prior high does not switch")
+    band = four_paths(3590.80, 3686.17)
+    if band["narrow_high"] != band["midpoint"] or band["narrow_high"] == band["hard_high"]:
+        print(f"FAIL narrow ceiling: {band}")
+        failed += 1
+    elif round_fen(band["midpoint"]) != 3638.49:
+        print(f"FAIL index midpoint fen: {band['midpoint']}")
+        failed += 1
+    else:
+        print("ok index four paths")
+    mantis = four_paths(4.12, 4.30)
+    if mantis["midpoint"] != 4.21 or round_fen(mantis["midpoint"]) != 4.21:
+        print(f"FAIL mantis midpoint: {mantis}")
+        failed += 1
+    else:
+        print("ok mantis midpoint")
+    fen_cases = (
+        (9.345, 9.35),
+        ((9.08 + 9.61) / 2, 9.35),
+        (2.325, 2.33),
+        ((2.30 + 2.35) / 2, 2.33),
+        (12.245, 12.25),
+        ((11.79 + 12.70) / 2, 12.25),
+        (4.505, 4.51),
+        ((4.35 + 4.66) / 2, 4.51),
+        (9.344, 9.34),
+    )
+    for raw, expected in fen_cases:
+        got = round_fen(raw)
+        if got != expected:
+            print(f"FAIL round_fen {raw}: {got}")
+            failed += 1
+        else:
+            print(f"ok round_fen {expected}")
+    follow_cases = (
+        ((True, True, True), "continue"),
+        ((True, False, True), "stopped"),
+        ((True, None, True), "unchecked"),
+        ((False, None, None), "stopped"),
+    )
+    for flags, expected in follow_cases:
+        got = first_day_follow_through(*flags)
+        if got != expected:
+            print(f"FAIL follow through {flags}: {got}")
+            failed += 1
+        else:
+            print(f"ok follow through {expected}")
+    chip_level = leader_hold_level(
+        "半导体",
+        {
+            "000685": {"pct": 12.61, "high": 2874.16},
+            "399811": {"pct": 10.91, "high": 5283.62},
+        },
+    )
+    if chip_level != 2874.16:
+        print(f"FAIL chip hold level: {chip_level}")
+        failed += 1
+    else:
+        print("ok chip hold level is the higher percent high")
+    if leader_hold_level("银行", {"000685": {"pct": 12.61, "high": 2874.16}}) is not None:
+        print("FAIL unmapped hold level")
+        failed += 1
+    else:
+        print("ok unmapped industry has no hold level")
     return 1 if failed else 0
 
 
@@ -904,6 +1078,10 @@ def main() -> int:
         height_n,
         ratio.get("ratio"),
     )
+    sh_bar = q.get("000001") or {}
+    if sh_bar.get("low") is not None and sh_bar.get("high") is not None:
+        # Tomorrow's band only. Do not choose favored_path from today's high.
+        packet["next_session_band"] = four_paths(sh_bar["low"], sh_bar["high"])
     packet["sector_state"] = {
         "state": sector_state(
             top_count,
@@ -915,8 +1093,12 @@ def main() -> int:
             False,
         ),
         "top_industry": top_name,
+        "second_count": second_count,
+        "height_in_leader": height_in,
         "leader_index_pct": leader,
+        "leader_prior_high": leader_hold_level(top_name, q) if top_name else None,
         "catalyst_dated": False,
+        "follow_through": "unchecked",
     }
     print(json.dumps(packet, ensure_ascii=False, indent=2))
     return 0
