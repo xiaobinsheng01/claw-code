@@ -167,6 +167,36 @@ def _direction(value):
     return "flat"
 
 
+def session_path(close: float, day_low: float, day_high: float, prev_close: float) -> dict:
+    """Label where a close sits in the next session's four paths.
+
+    The band is the prior day's low and high. This does not score W1–W8
+    and does not choose a bank direction.
+    """
+    midpoint = (day_low + day_high) / 2
+    if close < day_low:
+        zone = "below_hard"
+    elif close <= midpoint:
+        zone = "narrow_lower"
+    elif close <= day_high:
+        zone = "hard_upper"
+    else:
+        zone = "above_hard"
+    if close < prev_close:
+        shanghai = "down"
+    elif close > prev_close:
+        shanghai = "up"
+    else:
+        shanghai = "flat"
+    cushion_applies = shanghai == "down" and zone != "above_hard"
+    return {
+        "zone": zone,
+        "midpoint": midpoint,
+        "shanghai_vs_prev": shanghai,
+        "cushion_applies": cushion_applies,
+    }
+
+
 def structure(q: dict) -> dict:
     """Daily hedge, cushion, and national-team wording. Does not change the score."""
     shanghai = _pct(q, "000001")
@@ -582,6 +612,25 @@ def self_check() -> int:
         failed += 1
     else:
         print("ok month stage missing electronics")
+    paths = [
+        (3608.10, "hard_upper", "flat", False),
+        (3605.0, "hard_upper", "down", True),
+        (3590.0, "narrow_lower", "down", True),
+        (3620.0, "hard_upper", "up", False),
+        (3630.0, "above_hard", "up", False),
+        (3570.0, "below_hard", "down", True),
+    ]
+    for close, zone, direction, cushion in paths:
+        got = session_path(close, 3580.38, 3624.58, 3608.10)
+        if (
+            got["zone"] != zone
+            or got["shanghai_vs_prev"] != direction
+            or got["cushion_applies"] is not cushion
+        ):
+            print(f"FAIL session path {close}: {got}")
+            failed += 1
+        else:
+            print(f"ok session path {zone} {close}")
     return 1 if failed else 0
 
 
