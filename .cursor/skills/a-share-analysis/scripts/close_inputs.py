@@ -2,7 +2,7 @@
 """Print the quotes, breadth, and repair-day checks for one A-share close.
 
 Stdlib only. Does not score W1–W8 and does not emit an order.
-5-day average turnover is left null when the history endpoint is down.
+5-day turnover comes from Tencent bars that print amount. Volume is never converted. The average stays null when that bar is missing or does not match the quote.
 """
 
 from __future__ import annotations
@@ -122,6 +122,154 @@ def limit_pool(trade_date: str) -> dict:
     height.sort(key=lambda row: int(row["lbc"] or 0), reverse=True)
     top = sorted(counts.items(), key=lambda pair: pair[1], reverse=True)[:8]
     return {"n": len(pool), "top_hy": top, "height": height[:8]}
+
+
+def _score_high(value: float, bands: tuple[tuple[float, int], ...], low: int) -> int:
+    for threshold, score in bands:
+        if value >= threshold:
+            return score
+    return low
+
+
+def w6_scores(
+    breadth_ratio: float | None,
+    limit_up: int | None,
+    limit_down: int | None,
+    broken_ratio: float | None,
+    premium: float | None,
+    height: int | None,
+    volume_ratio: float | None,
+) -> dict:
+    """Map the five W6 inputs onto -2..+2. Missing inputs are omitted, not filled with 0."""
+    dims: dict[str, int] = {}
+    if breadth_ratio is not None:
+        dims["breadth"] = _score_high(
+            breadth_ratio, ((0.80, 2), (0.65, 1), (0.35, 0), (0.20, -1)), -2
+        )
+    if limit_up is not None and limit_down is not None and broken_ratio is not None:
+        if limit_down >= 30 or broken_ratio >= 0.55:
+            dims["limit"] = -2
+        elif limit_up < 20 or broken_ratio >= 0.40:
+            dims["limit"] = -1
+        elif limit_up >= 80 and broken_ratio < 0.25 and limit_down <= 15:
+            dims["limit"] = 2
+        elif limit_up >= 40 and broken_ratio < 0.35:
+            dims["limit"] = 1
+        else:
+            dims["limit"] = 0
+    if premium is not None:
+        dims["premium"] = _score_high(premium, ((0.03, 2), (0.01, 1), (-0.01, 0), (-0.03, -1)), -2)
+    if height is not None:
+        dims["height"] = _score_high(float(height), ((6, 2), (4, 1), (2, 0), (1, -1)), -2)
+    if volume_ratio is not None:
+        dims["volume"] = _score_high(
+            volume_ratio, ((1.30, 2), (1.10, 1), (0.90, 0), (0.70, -1)), -2
+        )
+    scored = list(dims.values())
+    composite = None
+    if len(scored) >= 4:
+        if len(scored) == 5 and sum(item >= 1 for item in scored) >= 3 and all(item > -1 for item in scored):
+            composite = 2
+        else:
+            composite = max(-2, min(2, round(sum(scored) / len(scored))))
+    return {"dims": dims, "composite": composite, "scored_n": len(scored)}
+
+
+def sector_state(
+    top_count: int | None,
+    second_count: int | None,
+    height_in_top_industry: bool | None,
+    left_intraday_high: bool | None,
+    leader_index_pct: float | None,
+    industry_mapped: bool,
+    catalyst_dated: bool,
+) -> str:
+    """Return unchecked, candidate, first_day, or not_established."""
+    if top_count is None or second_count is None or height_in_top_industry is None:
+        return "unchecked"
+    concentrated = top_count >= 15 and top_count >= 1.5 * second_count
+    if (
+        concentrated
+        and height_in_top_industry
+        and left_intraday_high is False
+        and catalyst_dated
+    ):
+        return "candidate"
+    if (
+        concentrated
+        and industry_mapped
+        and leader_index_pct is not None
+        and leader_index_pct >= 3
+    ):
+        return "first_day"
+    return "not_established"
+
+
+GROWTH_INDUSTRY_KEYS = ("半导体", "元件", "光学", "电子", "通信", "计算机", "软件", "自动化")
+
+
+def leader_index_pct(top_industry: str, q: dict) -> tuple[bool, float | None]:
+    mapped = any(key in top_industry for key in GROWTH_INDUSTRY_KEYS)
+    if not mapped:
+        return False, None
+    if any(key in top_industry for key in ("通信",)):
+        return True, (q.get("399389") or {}).get("pct")
+    chip = (q.get("000685") or {}).get("pct")
+    electronics = (q.get("399811") or {}).get("pct")
+    values = [item for item in (chip, electronics) if item is not None]
+    if not values:
+        return True, None
+    return True, max(values)
+
+
+def index_amount_wan(code: str) -> list[tuple[str, float]]:
+    """Tencent daily bars that include turnover. Field 8 is万元. Volume is not converted."""
+    url = (
+        "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+        f"?param={code},day,,,8,qfq"
+    )
+    raw = fetch(url, timeout=20).decode("utf-8", "replace")
+    if "=" in raw[:20]:
+        raw = raw.split("=", 1)[1]
+    rows = json.loads(raw)["data"][code]["day"]
+    out = []
+    for row in rows:
+        if len(row) < 9:
+            continue
+        out.append((str(row[0]), float(row[8])))
+    return out
+
+
+def turnover_ratio(sh_quote_yi: float | None, sz_quote_yi: float | None) -> dict:
+    """Today's two-market amount versus the prior five sessions. Quote must match the bar."""
+    empty = {"avg5_yi": None, "ratio": None, "source": None}
+    if sh_quote_yi is None or sz_quote_yi is None:
+        return empty
+    try:
+        sh_rows = index_amount_wan("sh000001")
+        sz_rows = index_amount_wan("sz399001")
+    except Exception as exc:  # noqa: BLE001 — the caller records the gap
+        return empty | {"error": f"{type(exc).__name__}: {exc}"}
+    if len(sh_rows) < 6 or len(sz_rows) < 6:
+        return empty
+    sh_today = sh_rows[-1][1] / 10000
+    sz_today = sz_rows[-1][1] / 10000
+    if abs(sh_today - sh_quote_yi) > 0.05 or abs(sz_today - sz_quote_yi) > 0.05:
+        return empty | {"mismatch": [round(sh_today, 2), round(sz_today, 2)]}
+    prior = [
+        sh_rows[-6 + i][1] / 10000 + sz_rows[-6 + i][1] / 10000
+        for i in range(5)
+    ]
+    avg5 = sum(prior) / 5
+    today = sh_quote_yi + sz_quote_yi
+    if avg5 <= 0:
+        return empty
+    return {
+        "avg5_yi": round(avg5, 2),
+        "today_yi": round(today, 2),
+        "ratio": round(today / avg5, 3),
+        "source": "proxy.finance.qq.com/newfqkline",
+    }
 
 
 def repair(q: dict) -> dict:
@@ -631,6 +779,43 @@ def self_check() -> int:
             failed += 1
         else:
             print(f"ok session path {zone} {close}")
+    nov4 = w6_scores(4331 / 5095, 119, 11, 0.2171, -0.0014, 3, 1.221)
+    if nov4["composite"] != 2 or nov4["dims"]["breadth"] != 2 or nov4["dims"]["volume"] != 1:
+        print(f"FAIL nov4 w6: {nov4}")
+        failed += 1
+    else:
+        print("ok nov4 w6 +2")
+    diluted = w6_scores(0.85, 10, 5, 0.50, 0.0, 3, 1.40)
+    if diluted["composite"] != 1 or diluted["dims"]["limit"] != -1:
+        print(f"FAIL diluted w6: {diluted}")
+        failed += 1
+    else:
+        print("ok negative dimension blocks +2")
+    if w6_scores(0.90, None, None, None, None, None, None)["composite"] is not None:
+        print("FAIL w6 scored from one dimension")
+        failed += 1
+    else:
+        print("ok w6 needs four dimensions")
+    if sector_state(19, 11, False, True, 12.61, True, False) != "first_day":
+        print("FAIL first day")
+        failed += 1
+    else:
+        print("ok first day")
+    if sector_state(48, 6, False, True, None, False, False) != "not_established":
+        print("FAIL unmapped sector")
+        failed += 1
+    else:
+        print("ok unmapped stays not_established")
+    if sector_state(20, 4, True, False, 4.0, True, True) != "candidate":
+        print("FAIL candidate")
+        failed += 1
+    else:
+        print("ok candidate")
+    if sector_state(19, 11, None, True, 12.0, True, False) != "unchecked":
+        print("FAIL missing height")
+        failed += 1
+    else:
+        print("ok missing height stays unchecked")
     return 1 if failed else 0
 
 
@@ -650,13 +835,22 @@ def main() -> int:
         packet["gaps"].append("quotes_missing:" + ",".join(missing))
     sh = (q.get("000001") or {}).get("amount_yi")
     sz = (q.get("399001") or {}).get("amount_yi")
+    two = None if sh is None or sz is None else round(sh + sz, 2)
+    ratio = turnover_ratio(sh, sz)
     packet["turnover"] = {
         "shanghai_yi": sh,
         "shenzhen_yi": sz,
-        "two_market_yi": None if sh is None or sz is None else round(sh + sz, 2),
-        "avg5_yi": None,
+        "two_market_yi": two,
+        "avg5_yi": ratio.get("avg5_yi"),
+        "ratio": ratio.get("ratio"),
+        "source": ratio.get("source"),
     }
-    packet["gaps"].append("5日成交额未接入，量能不打分")
+    if ratio.get("avg5_yi") is None:
+        packet["gaps"].append("5日成交额未接入，量能不打分")
+        if ratio.get("error"):
+            packet["gaps"].append("turnover:" + ratio["error"])
+        if ratio.get("mismatch"):
+            packet["gaps"].append("turnover_mismatch:" + ",".join(str(item) for item in ratio["mismatch"]))
     if not fast:
         try:
             packet["breadth"] = breadth()
@@ -677,6 +871,53 @@ def main() -> int:
     packet["repair"] = repair(q)
     packet["structure"] = structure(q)
     packet["sell_checks"] = sell_checks(q)
+    breadth_row = packet.get("breadth") or {}
+    rise = breadth_row.get("rise_count")
+    fall = breadth_row.get("fall_count")
+    breadth_ratio = None
+    if rise is not None and fall is not None and rise + fall > 0:
+        breadth_ratio = rise / (rise + fall)
+    height_n = None
+    top_count = second_count = None
+    height_in = None
+    top_name = ""
+    pool = packet.get("limit_up") or {}
+    top_hy = pool.get("top_hy") or []
+    height_rows = pool.get("height") or []
+    if top_hy:
+        top_name, top_count = top_hy[0]
+        second_count = top_hy[1][1] if len(top_hy) > 1 else 0
+    if height_rows and height_rows[0].get("lbc") is not None:
+        height_n = int(height_rows[0]["lbc"])
+        height_in = height_rows[0].get("hy") == top_name if top_name else None
+    elec = q.get("399811") or {}
+    left_high = None
+    if elec.get("px") is not None and elec.get("high") is not None:
+        left_high = elec["px"] < elec["high"]
+    mapped, leader = leader_index_pct(top_name, q) if top_name else (False, None)
+    packet["w6"] = w6_scores(
+        breadth_ratio,
+        breadth_row.get("limit_up_count"),
+        breadth_row.get("limit_down_count"),
+        breadth_row.get("limit_up_broken_ratio"),
+        breadth_row.get("yesterday_limit_up_avg_pcp"),
+        height_n,
+        ratio.get("ratio"),
+    )
+    packet["sector_state"] = {
+        "state": sector_state(
+            top_count,
+            second_count,
+            height_in,
+            left_high,
+            leader,
+            mapped,
+            False,
+        ),
+        "top_industry": top_name,
+        "leader_index_pct": leader,
+        "catalyst_dated": False,
+    }
     print(json.dumps(packet, ensure_ascii=False, indent=2))
     return 0
 
