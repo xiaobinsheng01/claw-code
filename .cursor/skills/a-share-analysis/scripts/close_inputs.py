@@ -360,31 +360,49 @@ def turnover_ratio(sh_quote_yi: float | None, sz_quote_yi: float | None) -> dict
 
 
 def repair(q: dict) -> dict:
+    """Two legs. One defensive sleeve closing down is enough.
+
+    Bank, coal, insurance, and liquor are watched for a down close. They do
+    not all have to fall. Liquor rising is not required, and a CATL stock
+    gain does not enter. Insurance is only a quote in this list. It is not
+    placed on the bank side, and it does not become a cushion.
+    """
     bank = (q.get("399986") or {}).get("pct")
     coal = (q.get("399998") or {}).get("pct")
+    insurance = (q.get("399809") or {}).get("pct")
     csi300 = (q.get("000300") or {}).get("pct")
     csi1000 = (q.get("000852") or {}).get("pct")
     liquor = (q.get("399997") or {}).get("pct")
     moutai = (q.get("600519") or {}).get("pct")
     catl = (q.get("300750") or {}).get("pct")
-    cond1 = (bank is not None and bank < 0) or (coal is not None and coal < 0)
-    cond2 = (
-        csi300 is not None and csi1000 is not None and csi300 < csi1000
-    )
-    # 茅台所在行业用中证白酒。宁德个股上涨不等于电力设备行业上涨。
-    cond3 = liquor is not None and liquor > 0
+    members = {
+        "bank": bank,
+        "coal": coal,
+        "insurance": insurance,
+        "liquor": liquor,
+    }
+    down_members = [name for name, pct in members.items() if pct is not None and pct < 0]
+    known = [pct for pct in members.values() if pct is not None]
+    defensive_down = bool(down_members) if known else None
+    cond2_known = csi300 is not None and csi1000 is not None
+    cond2 = bool(cond2_known and csi300 < csi1000)
+    repair_day = bool(known) and cond2_known and bool(defensive_down) and cond2
     return {
         "bank_pct": bank,
         "coal_pct": coal,
+        "insurance_pct": insurance,
         "csi300_pct": csi300,
         "csi1000_pct": csi1000,
         "liquor_pct": liquor,
         "moutai_pct": moutai,
         "catl_pct": catl,
-        "bank_or_coal_down": cond1,
-        "csi300_gain_below_csi1000": cond2,
-        "liquor_industry_up": cond3,
-        "all_three": bool(cond1 and cond2 and cond3),
+        "down_members": down_members,
+        "defensive_any_one_down": defensive_down,
+        "csi300_gain_below_csi1000": cond2 if cond2_known else None,
+        "liquor_required_up": False,
+        "insurance_on_bank_side": False,
+        "catl_counts": False,
+        "repair_day": repair_day,
     }
 
 
@@ -546,6 +564,7 @@ def structure(q: dict) -> dict:
             }
         ),
         "hedge_leg": "bank_399986_vs_electronics_399811",
+        "insurance_on_bank_side": False,
         "primary_cushion": "bank",
         "second_cushion_on_shanghai_down": "food",
         "sample_window": "2026-07-01_to_2026-11-03",
@@ -790,6 +809,12 @@ def self_check() -> int:
     elif "insurance" not in registered["not_cushions"]:
         print("FAIL insurance still a cushion")
         failed += 1
+    elif registered.get("insurance_on_bank_side") is not False or "bank_side" in registered:
+        print("FAIL insurance written onto the bank side")
+        failed += 1
+    elif registered["primary_cushion"] != "bank":
+        print("FAIL primary cushion moved off the bank index")
+        failed += 1
     else:
         print("ok secondary insurance")
     quiet = structure(
@@ -990,6 +1015,96 @@ def self_check() -> int:
         failed += 1
     else:
         print("ok unmapped industry has no hold level")
+    repair_cases = (
+        (
+            "nov4 any one and the spread",
+            {
+                "399986": -0.81,
+                "399998": -0.31,
+                "399809": -1.02,
+                "399997": -2.03,
+                "000300": 2.31,
+                "000852": 4.67,
+                "600519": -2.27,
+                "300750": 1.43,
+            },
+            True,
+            ["bank", "coal", "insurance", "liquor"],
+        ),
+        (
+            "liquor alone is enough",
+            {
+                "399986": 0.4,
+                "399998": 0.2,
+                "399809": 0.3,
+                "399997": -0.5,
+                "000300": 0.2,
+                "000852": 1.1,
+            },
+            True,
+            ["liquor"],
+        ),
+        (
+            "insurance alone is enough and stays off the bank side",
+            {
+                "399986": 0.2,
+                "399998": 0.1,
+                "399809": -0.4,
+                "399997": 0.6,
+                "000300": -0.2,
+                "000852": 0.4,
+            },
+            True,
+            ["insurance"],
+        ),
+        (
+            "rising liquor does not create a repair day",
+            {
+                "399986": 0.3,
+                "399998": 0.2,
+                "399809": 0.1,
+                "399997": 1.5,
+                "600519": 2.0,
+                "300750": 3.0,
+                "000300": 0.2,
+                "000852": 1.0,
+            },
+            False,
+            [],
+        ),
+        (
+            "down sleeves without the spread",
+            {
+                "399986": -0.81,
+                "399998": -0.31,
+                "399809": -1.02,
+                "399997": -2.03,
+                "000300": -0.20,
+                "000852": -1.71,
+            },
+            False,
+            ["bank", "coal", "insurance", "liquor"],
+        ),
+        (
+            "missing defensive quotes",
+            {"000300": 0.2, "000852": 1.0},
+            False,
+            [],
+        ),
+    )
+    for name, raw, expect, members in repair_cases:
+        got = repair(_q(raw))
+        if (
+            got["repair_day"] is not expect
+            or got["down_members"] != members
+            or got["liquor_required_up"] is not False
+            or got["insurance_on_bank_side"] is not False
+            or got["catl_counts"] is not False
+        ):
+            print(f"FAIL {name}: {got}")
+            failed += 1
+        else:
+            print(f"ok {name}")
     return 1 if failed else 0
 
 
