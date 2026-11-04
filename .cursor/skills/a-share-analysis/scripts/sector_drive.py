@@ -113,14 +113,86 @@ def near_ma(closes: list[float]) -> dict:
     }
 
 
-def holder_simple(periods: list[list[str]]) -> str:
-    """Latest two report dates, ten names each. One complex word fails the name."""
+STATE_WORDS = (
+    "社保基金",
+    "基本养老保险基金",
+    "中央汇金",
+    "中国证券金融",
+    "中国国新",
+    "国新投资",
+    "国新宏盛",
+    "国新建源",
+    "中国诚通",
+    "国家集成电路产业投资基金",
+    "国有资产监督管理委员会",
+    "国资委",
+    "国有资本",
+    "国有资产经营",
+    "国资经营",
+)
+
+
+def _holder_name(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("name") or "")
+    return str(item)
+
+
+def _holder_ratio(item):
+    if isinstance(item, dict):
+        return item.get("ratio")
+    return None
+
+
+def _complex_names(names: list) -> list[str]:
+    found = []
+    for item in list(names)[:10]:
+        name = _holder_name(item)
+        if any(word in _norm_name(name) for word in COMPLEX_WORDS):
+            found.append(name)
+    return found
+
+
+def holder_simple(periods: list) -> str:
+    """Both periods need ten names. A complex word fails only the latest period."""
     if len(periods) < 2 or any(len(names) < 10 for names in periods[:2]):
         return "unchecked"
-    latest = [_norm_name(name) for name in periods[0][:10]]
-    if any(any(word in name for word in COMPLEX_WORDS) for name in latest):
+    if _complex_names(periods[0]):
         return "complex"
     return "simple"
+
+
+def prior_complex(periods: list) -> list[str]:
+    """Names in the previous top ten. They are printed and do not remove the stock."""
+    if len(periods) < 2:
+        return []
+    return _complex_names(periods[1])
+
+
+def state_capital(names: list) -> dict:
+    """Listed words count. A state-asset name outside that list is written beside."""
+    listed = []
+    beside = []
+    for item in list(names)[:10]:
+        name = _holder_name(item)
+        record = {"name": name, "ratio": _holder_ratio(item)}
+        norm = _norm_name(name)
+        if any(word in norm for word in STATE_WORDS):
+            listed.append(record)
+        elif "国有资产" in norm or "国资" in norm:
+            beside.append(record)
+    return {"listed": listed, "beside": beside}
+
+
+def prior_pct(series: list[tuple[str, float]], trade_date: str):
+    """Last bar versus the bar before it. A bar that is not the session stays blank."""
+    if len(series) < 2 or series[-1][0] != trade_date:
+        return None
+    prev = series[-2][1]
+    last = series[-1][1]
+    if prev is None or prev <= 0 or last is None:
+        return None
+    return last / prev - 1.0
 
 
 def earnings_state(profit, profit_yoy, income_yoy) -> str:
@@ -276,7 +348,7 @@ def fetch_holders(code: str) -> list[list[str]]:
     suffix = "SH" if code.startswith("6") else "SZ"
     url = (
         "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_EH_HOLDERS"
-        "&columns=END_DATE,HOLDER_RANK,HOLDER_NAME"
+        "&columns=END_DATE,HOLDER_RANK,HOLDER_NAME,HOLD_NUM_RATIO"
         f"&filter=(SECUCODE=%22{code}.{suffix}%22)(IS_REPORT=%221%22)"
         "&pageNumber=1&pageSize=40&sortColumns=END_DATE,HOLDER_RANK&sortTypes=-1,1"
     )
@@ -293,7 +365,7 @@ def fetch_holders(code: str) -> list[list[str]]:
             current = day
             bucket = []
         if len(bucket) < 10 and row.get("HOLDER_NAME"):
-            bucket.append(row["HOLDER_NAME"])
+            bucket.append({"name": row["HOLDER_NAME"], "ratio": row.get("HOLD_NUM_RATIO")})
     if bucket:
         periods.append(bucket)
     return periods[:2]
@@ -357,13 +429,17 @@ def screen(path: str, pcts: dict, shanghai_pct, held: set[str], us: dict, trade_
         row["ma5"] = stats["ma5"]
         row["ma10"] = stats["ma10"]
         row["close"] = stats["close"]
+        row["pct"] = prior_pct(series, trade_date)
         if stats["state"] == "pass":
             kept.append(row)
     near_rows = [row for row in kept if row.get("near") == "pass"]
     holder_map = _map_fetch(near_rows, lambda row: fetch_holders(row["code"]))
     earn_map = _map_fetch(near_rows, lambda row: fetch_earnings(row["code"]))
     for row in near_rows:
-        row["holder"] = holder_simple(holder_map.get(row["code"]) or [])
+        periods = holder_map.get(row["code"]) or []
+        row["holder"] = holder_simple(periods)
+        row["prior_complex"] = prior_complex(periods)
+        row["state_capital"] = state_capital(periods[0] if periods else [])
         earned = earn_map.get(row["code"]) or {"earnings": "unchecked"}
         row.update(earned)
     picked = recommend(near_rows, held)
@@ -434,6 +510,31 @@ def self_check() -> int:
     check("simple", simple == "simple")
     check("partnership", holder_simple([["某有限合伙"] + ["甲"] * 9, ["乙"] * 10]) == "complex")
     check("short holders", holder_simple([["甲"] * 9, ["乙"] * 10]) == "unchecked")
+    prior = [["甲公司"] * 10, ["天津信月潭企业管理合伙企业(有限合伙)", "某信托计划"] + ["乙"] * 8]
+    check("prior complex stays", holder_simple(prior) == "simple")
+    check("prior complex named", "有限合伙" in prior_complex(prior)[0] and len(prior_complex(prior)) == 2)
+    social = state_capital(["全国社保基金五零四组合", "甲公司"])
+    check(
+        "social fund listed",
+        social["listed"] == [{"name": "全国社保基金五零四组合", "ratio": None}] and social["beside"] == [],
+    )
+    local = state_capital([{"name": "山东省国有资产投资控股有限公司", "ratio": 4.27}])
+    check(
+        "local holding stays beside",
+        local["listed"] == []
+        and local["beside"] == [{"name": "山东省国有资产投资控股有限公司", "ratio": 4.27}],
+    )
+    funds = state_capital([
+        {"name": "华芯投资管理有限责任公司-国家集成电路产业投资基金二期股份有限公司", "ratio": 3.72},
+        "国家集成电路产业投资基金股份有限公司",
+    ])
+    check("both chip funds listed", len(funds["listed"]) == 2 and funds["beside"] == [] and funds["listed"][0]["ratio"] == 3.72)
+    sasac = state_capital(["某某市国有资产监督管理委员会"])
+    check("sasac is listed", sasac["listed"] and sasac["beside"] == [])
+    check("plain holder", state_capital(["甲公司"]) == {"listed": [], "beside": []})
+    moved = prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-04")
+    check("prior pct", moved is not None and abs(moved - (13.36 / 12.42 - 1)) < 1e-12)
+    check("pct other day", prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-05") is None)
     check("earnings pass", earnings_state(1, 0, 0) == "pass")
     check("earnings loss", earnings_state(-1, 10, 10) == "fail")
     check("earnings gap", earnings_state(1, None, 1) == "unchecked")
