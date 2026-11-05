@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import unittest
 
-from info_diff import classify_link, links_from_html, pack
+from info_diff import article_fact, classify_link, links_from_html, pack
 from intraday_brief import pair, path_text, segment
 from intraday_screen import assign, both_averages, judge_holders
 
@@ -119,7 +119,7 @@ class DiffTest(unittest.TestCase):
             "缺口",
         )
 
-    def test_a_four_character_stem_already_in_the_ledger_is_the_same_fact(self) -> None:
+    def test_a_shared_stem_does_not_drop_a_different_article(self) -> None:
         self.assertEqual(
             classify_link(
                 "二连浩特口岸中欧班列年内通行量突破4000列",
@@ -128,7 +128,7 @@ class DiffTest(unittest.TestCase):
                 "08:00 二连浩特班列",
                 cursor="2026-11-05 10:25",
             ),
-            "同一事实已记",
+            "缺口",
         )
 
     def test_same_title_is_not_opened(self) -> None:
@@ -146,6 +146,21 @@ class DiffTest(unittest.TestCase):
         self.assertEqual(len(packed["open"]), 20)
         self.assertEqual(packed["open"][0]["clock"], "11-05 10:29")
         self.assertEqual(packed["open_left"], 10)
+
+    def test_the_default_pack_keeps_every_clocked_page(self) -> None:
+        rows = [
+            {"status": "待打开", "clock": f"11-05 10:{minute:02d}", "title": str(minute), "url": str(minute), "sector": False}
+            for minute in range(30)
+        ]
+        packed = pack(rows)
+        self.assertEqual(len(packed["open"]), 30)
+        self.assertEqual(packed["open_left"], 0)
+
+    def test_article_fact_keeps_the_number_and_drops_the_page(self) -> None:
+        html = "<style>body{}</style><p>财政部称 2026 年前三季度证券交易印花税 1425 亿元，同比下降 12.4%。</p>"
+        fact = article_fact(html)
+        self.assertIn("1425", fact)
+        self.assertNotIn("<p>", fact)
 
 
 if __name__ == "__main__":
