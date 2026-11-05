@@ -5,3 +5,5 @@ archive/
 # Claude Code local artifacts
 .claude/settings.local.json
 .claude/sessions/
+.cursor/skills/a-share-analysis/info-ledger.md
+.cursor/skills/a-share-analysis/cache/
