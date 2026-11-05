@@ -20,7 +20,6 @@ CLOCK_RE = re.compile(r"(20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}|\d{2}-\d{2}\s+\d{2}:
 DATE_RE = re.compile(r"20\d{2}[-/]\d{2}[-/]\d{2}")
 SECTOR_WORDS = ("电子", "芯片", "通信", "银行", "食品饮料", "煤炭")
 COMMENT_WORDS = ("访谈", "专访", "快评", "评论", "策略", "投资机构", "CEO", "基金经理", "首席", "综述", "券商")
-GENERIC_STEMS = ("电子", "芯片", "通信", "银行", "煤炭", "食品", "中国", "市场", "公司", "指数")
 COLLECT_START = "2026-11-03 09:00"
 
 PAGES = (
@@ -53,17 +52,6 @@ def _id_in_text(url: str, text: str) -> bool:
     return any(item and item in text for item in found)
 
 
-def _stem_seen(title: str, ledger: str) -> bool:
-    """The first four-character stem is enough when the ledger already named that story."""
-    found = re.search(r"[\u4e00-\u9fff]{4,}", title)
-    if not found:
-        return False
-    stem = found.group(0)[:4]
-    if stem in GENERIC_STEMS:
-        return False
-    return stem in ledger
-
-
 def _clock_text(clock: str, url: str) -> str:
     found = re.search(r"(20\d{2}-\d{2}-\d{2})[ T](\d{2}:\d{2})", clock)
     if found:
@@ -91,7 +79,7 @@ def classify_link(
         return None
     if any(word in title for word in COMMENT_WORDS):
         return "不进W1–W5"
-    if title and (title in ledger or _stem_seen(title, ledger)):
+    if title and title in ledger:
         return "同一事实已记"
     clock = CLOCK_RE.search(nearby)
     if clock:
@@ -138,8 +126,8 @@ def links_from_html(html: str, base: str, ledger: str, source: str, cursor: str 
     return rows
 
 
-def pack(rows: list[dict], open_limit: int = 20) -> dict:
-    """Keep every clocked new page up to the cap. Date-only titles stay a short list."""
+def pack(rows: list[dict], open_limit: int | None = None) -> dict:
+    """Keep every clocked new page. A limit is only for a caller that asks for one."""
     def newer(row: dict) -> str:
         return row.get("clock") or ""
 
@@ -148,16 +136,41 @@ def pack(rows: list[dict], open_limit: int = 20) -> dict:
     same = [row for row in rows if row["status"] == "同一事实已记"]
     undated = [row for row in rows if row["status"] == "无发布时间"]
     sector_undated = [row for row in undated if row.get("sector")]
+    if open_limit is not None:
+        opening_out, gap_out = opening[:open_limit], gap[:open_limit]
+    else:
+        opening_out, gap_out = opening, gap
     return {
-        "open": opening[:open_limit],
-        "open_left": max(0, len(opening) - open_limit),
-        "gap": gap[:open_limit],
-        "gap_left": max(0, len(gap) - open_limit),
-        "same_fact": same[:8],
+        "open": opening_out,
+        "open_left": max(0, len(opening) - len(opening_out)),
+        "gap": gap_out,
+        "gap_left": max(0, len(gap) - len(gap_out)),
+        "same_fact": same,
         "comment_skipped": sum(1 for row in rows if row["status"] == "不进W1–W5"),
         "undated_count": len(undated),
-        "undated_sector": sector_undated[:8],
+        "undated_sector": sector_undated,
     }
+
+
+def article_fact(html: str) -> str:
+    """One sentence from the page. The raw page stays out of the conversation."""
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    found = re.search(r".{0,40}\d[\d\.％%年月日亿万点元].{0,100}", text)
+    snippet = found.group(0) if found else text[:120]
+    return snippet[:160]
+
+
+def attach_facts(rows: list[dict]) -> None:
+    for row in rows:
+        try:
+            html = _fetch(row["url"])
+        except Exception as exc:  # noqa: BLE001 — a dead page stays a row
+            row["fact"] = ""
+            row["fetch"] = type(exc).__name__
+            continue
+        row["fact"] = article_fact(html)
 
 
 def _fetch(url: str, timeout: int = 12) -> str:
@@ -202,6 +215,7 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         mounts.append({"source": "overseas_feed", "error": type(exc).__name__})
     payload = pack(rows)
+    attach_facts(payload["open"] + payload["gap"])
     payload["overseas_new"] = overseas
     payload["mounts"] = mounts
     payload["cursor"] = cursor

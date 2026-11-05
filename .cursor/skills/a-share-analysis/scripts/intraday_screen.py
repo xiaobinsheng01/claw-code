@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Screen drive-sector main-board names above both averages. Print the opened ten.
+"""Screen every drive-sector main-board name above both averages.
 
-K-lines and holder pages stay in this process. The printed table is the intraday
-list: ten names a sector, both averages, and the two holder cells. A holder page
-already cached for the same two report dates is not fetched again. This does not
-score, does not change the path, and does not place an order.
+K-lines and holder pages stay in this process. Every name that clears both
+averages is printed with the two holder cells. Nothing is dropped for length.
+A holder page already cached for the same two report dates is not fetched again.
+This does not score, does not change the path, and does not place an order.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from sector_drive import (  # noqa: E402
 
 RULE = "holder-v1"
 CACHE = Path(__file__).resolve().parents[1] / "cache" / "holders.json"
-OPEN_LIMIT = 10
 SH_PREFIX = {"000001", "000016", "000300", "000688", "000852", "000685", "000807", "000993", "000941"}
 
 
@@ -167,16 +166,21 @@ def save_cache(names: dict) -> None:
     CACHE.write_text(json.dumps({"rule": RULE, "names": names}, ensure_ascii=False), encoding="utf-8")
 
 
-def holder_cell(code: str, cache: dict) -> dict:
-    cached = cache.get(code)
-    if isinstance(cached, dict) and cached.get("simple"):
-        cached["cached"] = True
-        return cached
+def judge_one(code: str) -> dict:
     try:
         judged = judge_holders(fetch_holder_periods(code))
     except Exception as exc:  # noqa: BLE001 — one failed page stays unchecked
         judged = {"simple": "未核", "state": "未核", "hits": [], "complex_one": "", "error": type(exc).__name__}
     judged["cached"] = False
+    return judged
+
+
+def holder_cell(code: str, cache: dict) -> dict:
+    cached = cache.get(code)
+    if isinstance(cached, dict) and cached.get("simple"):
+        cached["cached"] = True
+        return cached
+    judged = judge_one(code)
     cache[code] = {key: judged.get(key) for key in ("simple", "state", "hits", "complex_one", "days")}
     return judged
 
@@ -250,13 +254,18 @@ def screen(day: str) -> dict:
         )
     cache = load_cache()
     opened = []
+    pending = []
     summary = []
     for item in INDUSTRIES:
         rows = grouped[item["index"]]
         rows.sort(key=lambda row: (row["pct"] is None, -(row["pct"] or -999)))
-        keep = [row for row in rows if row["pct"] is not None][:OPEN_LIMIT]
+        keep = [row for row in rows if row["pct"] is not None]
         for row in keep:
-            row["holder"] = holder_cell(row["code"], cache)
+            cached = cache.get(row["code"])
+            if isinstance(cached, dict) and cached.get("simple"):
+                row["holder"] = {**cached, "cached": True}
+            else:
+                pending.append(row)
             opened.append(row)
         summary.append(
             {
@@ -267,6 +276,16 @@ def screen(day: str) -> dict:
                 "unchecked": max(0, len(rows) - len(keep)),
             }
         )
+    if pending:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = {pool.submit(judge_one, row["code"]): row for row in pending}
+            for future in as_completed(futures):
+                row = futures[future]
+                judged = future.result()
+                row["holder"] = judged
+                cache[row["code"]] = {
+                    key: judged.get(key) for key in ("simple", "state", "hits", "complex_one", "days")
+                }
     save_cache(cache)
     passed = []
     for row in opened:
