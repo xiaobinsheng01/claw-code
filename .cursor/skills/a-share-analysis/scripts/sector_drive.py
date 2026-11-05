@@ -184,6 +184,14 @@ def state_capital(names: list) -> dict:
     return {"listed": listed, "beside": beside}
 
 
+def as_of(series: list[tuple[str, float]], trade_date: str) -> list[tuple[str, float]]:
+    """Bars through the requested session. A later session does not replace it."""
+    cut = [bar for bar in series if bar[0] <= trade_date]
+    if not cut or cut[-1][0] != trade_date:
+        return []
+    return cut
+
+
 def prior_pct(series: list[tuple[str, float]], trade_date: str):
     """Last bar versus the bar before it. A bar that is not the session stays blank."""
     if len(series) < 2 or series[-1][0] != trade_date:
@@ -510,7 +518,7 @@ def screen(path: str, pcts: dict, shanghai_pct, held: set[str], us: dict, trade_
     closes = _map_fetch(flat, lambda row: fetch_closes(row["code"]))
     kept = []
     for row in flat:
-        series = closes.get(row["code"]) or []
+        series = as_of(closes.get(row["code"]) or [], trade_date)
         if not series or series[-1][0] != trade_date:
             row["near"] = "unchecked"
             kept.append(row)
@@ -628,6 +636,8 @@ def self_check() -> int:
     check("plain holder", state_capital(["甲公司"]) == {"listed": [], "beside": []})
     fuguo = state_capital(["中信银行股份有限公司-富国资源精选混合型发起式证券投资基金"])
     check("fuguo fund is not state capital", fuguo["listed"] == [] and fuguo["beside"] == [])
+    kept = as_of([("2026-11-04", 13.36), ("2026-11-05", 13.50)], "2026-11-04")
+    check("later session stays off the requested close", kept == [("2026-11-04", 13.36)])
     moved = prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-04")
     check("prior pct", moved is not None and abs(moved - (13.36 / 12.42 - 1)) < 1e-12)
     check("pct other day", prior_pct([("2026-11-03", 12.42), ("2026-11-04", 13.36)], "2026-11-05") is None)
